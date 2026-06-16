@@ -1,0 +1,82 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: job-posting-service
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/job_posting_db}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000
+
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: job-posting-group
+      auto-offset-reset: earliest
+      key-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.key.delegate.class: org.apache.kafka.common.serialization.StringDeserializer
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+        spring.json.trusted.packages: "com.talentgrid.jobposting.event,java.util,java.lang"
+        spring.json.use.type.headers: false
+        spring.json.value.default.type: com.talentgrid.jobposting.event.DemandEvent
+    listener:
+      ack-mode: MANUAL_IMMEDIATE
+
+jwt:
+  secret: ${JWT_SECRET:your-256-bit-secret-key-must-be-long-enough-for-hmac}
+  issuer: auth-service
+
+portal:
+  kafka:
+    topic:
+      job-events: ${PORTAL_JOB_EVENTS_TOPIC:portal-job-events}
+      confirmations: ${PORTAL_CONFIRMATIONS_TOPIC:portal-confirmations}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+
+logging:
+  level:
+    com.talentgrid.jobposting: INFO
+    org.springframework.kafka: WARN
+    org.hibernate.SQL: WARN
+
+external:
+  ai-service:
+    base-url: ${AI_SERVICE_BASE_URL:http://localhost:9999}
+
+forge:
+  guardrail:
+    production-mode: true
+    semantic:
+      enabled: false
+    api:
+      enabled: false
+
