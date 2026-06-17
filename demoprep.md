@@ -159,10 +159,10 @@ Every backend service's env vars (`DB_URL`, `DB_USERNAME`, `JWT_SECRET`, `KAFKA_
 ### `.env` (project root, gitignored — never commit this)
 
 ```env
-DB_USERNAME=forge
-DB_PASSWORD=forge_secure_123
-JWT_SECRET=forge-jwt-hmac-secret-key-must-be-at-least-256-bits-long-change-in-prod
-AI_SERVICE_BASE_URL=http://host.docker.internal:9999
+DB_USERNAME=""
+DB_PASSWORD=""
+JWT_SECRET=
+AI_SERVICE_BASE_URL=
 ```
 
 `JWT_SECRET` must be **identical** for `user-auth-service` (which signs tokens) and `job-posting-service` (which verifies them) — docker-compose injects the same value into both, so this is automatic as long as `.env` isn't edited mid-flight.
