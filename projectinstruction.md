@@ -82,9 +82,9 @@ The root folder should contain a `.env` file.
 Example:
 
 ```env
-DB_USERNAME=forge
-DB_PASSWORD=forge_secure_123
-JWT_SECRET=forge-jwt-hmac-secret-key-must-be-at-least-256-bits-long-change-in-prod
+DB_USERNAME=""
+DB_PASSWORD=""
+JWT_SECRET=
 AI_SERVICE_BASE_URL=http://host.docker.internal:9999
 ```
 
