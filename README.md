@@ -1,1054 +1,471 @@
-# Forge FullStack Project - Local Setup and Run Guide
+# 06 - Search Endpoints, Pagination, Filtering, and Sorting
 
-This README explains how to understand, build, run, debug, and test the Forge FullStack project locally.
+## Module 7 Requirement Covered
 
-The project contains a frontend Angular application, Java Spring Boot backend services, PostgreSQL, Kafka, Redis, Nginx gateway, and an external AI service integration used for JD generation.
+This README covers **Part 6: Search endpoints and pagination** from Module 7 Spring Web.
 
----
+Module 7 expects:
 
-## 1. Project Overview
+- Get-all endpoints support pagination with `page` and `size` request parameters.
+- Responses contain metadata such as total items, current page, and max/total pages.
+- Filtering is added to get-all endpoints.
+- At least 3 searchable parameters are supported.
+- Ordering is available for at least 2 parameters.
+- Exact-value search is supported for at least 1 field, with multiple values if appropriate.
+- Less-than/greater-than search is supported for at least 1 numeric or date field.
+- Functionality is flexible and extensible.
+- Unit and integration tests cover search/pagination.
 
-The Forge FullStack project is a microservice-based application.
+## Current Search/Pagination Status in Forge
 
-Main modules:
+Confirmed from supplied documentation:
 
-```text
-Forge_FullStack 2/
-├── Forge_backend/
-│   ├── backend/
-│   │   ├── job-posting-service/
-│   │   └── user-auth-service/
-│   └── nginx/
-├── Forge_frontend/
-│   └── apps/
-│       └── demands/
-├── docker-compose.yml
-├── init-db.sql
-└── .env
+| Endpoint | Current Capability | Module 7 Gap |
+|---|---|---|
+| `GET /api/job-postings` | Lists all postings and supports optional `status` filter | Add `page`, `size`, `sort`, and more filters |
+| `GET /api/demands` | Lists available demands | Add pagination/filtering if required |
+| `GET /api/notifications` | Lists notifications newest first | Add pagination if large notification sets matter |
+| `GET /api/job-postings/public/live` | Lists public READY_TO_PUBLISH/LIVE jobs | Add pagination/filtering for public careers portal if required |
+
+Current confirmed query example:
+
+```http
+GET /api/job-postings?status=PENDING_APPROVAL
 ```
 
-### Main Services
-
-| Service             | Purpose                                       | Local Port                         |
-| ------------------- | --------------------------------------------- | ---------------------------------- |
-| Frontend            | Angular UI                                    | 4200                               |
-| Nginx Gateway       | Routes frontend API calls to backend services | 8084 or configured gateway port    |
-| User Auth Service   | Handles login/authentication/JWT              | 8085 mapped to internal 8081       |
-| Job Posting Service | Handles demands, job postings, JD generation  | 8082                               |
-| PostgreSQL          | Database                                      | 5432                               |
-| Kafka               | Event streaming                               | 9092 / 29092 internally            |
-| Kafka UI            | Kafka management UI                           | usually 8080 or configured port    |
-| Redis               | Cache/session support                         | 6379                               |
-| External AI Service | Used by JD generation                         | expected at 9999 or configured URL |
-
----
-
-## 2. Prerequisites
-
-Install the following before running the project:
-
-### Required
-
-```text
-Docker Desktop
-Docker Compose
-Java 17
-Maven
-Node.js
-npm
-Angular CLI
-Git
-```
-
-### Check versions
-
-```bash
-docker --version
-docker-compose --version
-java -version
-mvn -version
-node -v
-npm -v
-```
-
-Java should be version 17.
-
----
-
-## 3. Important Environment File
-
-The root folder should contain a `.env` file.
-
-Example:
-
-```env
-DB_USERNAME=
-DB_PASSWORD=
-JWT_SECRET=
-AI_SERVICE_BASE_URL=http://host.docker.internal:9999
-```
-
-### Important note about AI_SERVICE_BASE_URL
-
-If the AI service runs on your Mac machine at port `9999`, use:
-
-```env
-AI_SERVICE_BASE_URL=http://host.docker.internal:9999
-```
-
-Do **not** use this inside Docker:
-
-```env
-AI_SERVICE_BASE_URL=http://localhost:9999
-```
-
-Inside a Docker container, `localhost` means the container itself, not your Mac.
-
-If Team 4 gives a remote AI service URL, use that instead:
-
-```env
-AI_SERVICE_BASE_URL=http://actual-team4-ai-host:actual-port
-```
-
-After changing `.env`, recreate the job-posting-service:
-
-```bash
-docker-compose up -d --force-recreate job-posting-service
-```
-
-Verify:
-
-```bash
-docker-compose exec job-posting-service printenv | grep AI_SERVICE_BASE_URL
-```
-
-Expected example:
-
-```text
-AI_SERVICE_BASE_URL=http://host.docker.internal:9999
-```
-
----
-
-## 4. Maven / JFrog Setup
-
-The backend depends on a private Grid Dynamics Maven artifact:
-
-```text
-com.gridynamics.forge:forge-ai-guardrail:2.0.1
-```
-
-Because this dependency is hosted in JFrog, Maven needs credentials.
-
-Check local Maven settings:
-
-```bash
-ls ~/.m2/settings.xml
-grep -n "jfrog-artifactory" ~/.m2/settings.xml
-```
-
-Local Maven should build successfully:
-
-```bash
-cd "Forge_backend/backend/job-posting-service"
-mvn -B clean package -DskipTests
-```
-
-If this succeeds locally but Docker build fails with `401 Unauthorized`, Docker does not have access to Maven credentials.
-
-### Quick local Docker fix
-
-From:
-
-```bash
-cd "Forge_backend/backend/job-posting-service"
-```
-
-Copy Maven settings:
-
-```bash
-cp ~/.m2/settings.xml ./settings.xml
-```
-
-Add `settings.xml` to `.gitignore`:
-
-```bash
-echo "settings.xml" >> .gitignore
-```
-
-Update the `Dockerfile` build stage like this:
-
-```dockerfile
-# ── Stage 1: Build ───────────────────────────────────────────────────────────
-FROM eclipse-temurin:17-jdk-jammy AS builder
-WORKDIR /app
-
-COPY pom.xml .
-COPY src ./src
-
-RUN mkdir -p /root/.m2
-COPY settings.xml /root/.m2/settings.xml
-
-RUN apt-get update -q && apt-get install -yq maven && \
-    mvn -B -q clean package -DskipTests && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-```
-
-Keep the runtime stage unchanged.
-
-Important: never commit `settings.xml` because it contains credentials.
-
-Check before committing:
-
-```bash
-git status --short
-```
-
----
-
-## 5. Build and Run Everything with Docker
-
-From the project root:
-
-```bash
-cd "/Users/sanjakumar/Downloads/Forge_FullStack 2"
-```
-
-Build all services:
-
-```bash
-docker-compose build
-```
-
-Start all services:
-
-```bash
-docker-compose up -d
-```
-
-Or build and start together:
-
-```bash
-docker-compose up --build -d
-```
-
-Check running containers:
-
-```bash
-docker-compose ps
-```
-
-Expected important services:
-
-```text
-forge-frontend
-forge-auth
-forge-job-posting
-forge-postgres
-forge-kafka
-forge-zookeeper
-forge-redis
-forge-nginx
-```
-
----
-
-## 6. Rebuild One Service
-
-### Rebuild job-posting-service
-
-Use this after changing backend Java code:
-
-```bash
-docker-compose build job-posting-service
-docker-compose up -d --force-recreate job-posting-service
-```
-
-Full clean rebuild:
-
-```bash
-docker-compose build --no-cache job-posting-service
-docker-compose up -d --force-recreate job-posting-service
-```
-
-### Rebuild frontend
-
-```bash
-docker-compose build frontend
-docker-compose up -d --force-recreate frontend
-```
-
-Service names may vary slightly depending on `docker-compose.yml`.
-
----
-
-## 7. Application URLs
-
-### Frontend
-
-Open:
-
-```text
-http://localhost:4200
-```
-
-This is the main UI.
-
-### Auth Service Health
-
-```bash
-curl http://localhost:8085/actuator/health
-```
-
-Expected:
+Current response style:
 
 ```json
-{"status":"UP"}
+[
+  {
+    "id": 1,
+    "title": "Senior Java Developer",
+    "postingStatus": "PENDING_APPROVAL"
+  }
+]
 ```
 
-Opening this in browser may show:
+Module 7 target response should be paginated.
 
-```json
-{"error":"Unauthorized"}
+## Recommended Primary Endpoint for Module 7
+
+Use job postings as the main search/pagination resource because it has many searchable fields:
+
+```http
+GET /api/job-postings/search
 ```
 
-That is normal if you hit a protected endpoint without login.
+or extend the existing endpoint:
 
-### Job Posting Service Health
-
-```bash
-curl http://localhost:8082/actuator/health
+```http
+GET /api/job-postings
 ```
 
-Expected:
+Recommended final endpoint:
 
-```json
-{"status":"UP"}
+```http
+GET /api/job-postings?page=0&size=10&sort=createdAt,desc&status=LIVE&workMode=REMOTE&level=SENIOR&salaryMinGte=100000
 ```
 
-### Gateway Health
+## Pagination Parameters
 
-Depending on your gateway port:
+| Parameter | Type | Default | Example | Description |
+|---|---|---|---|---|
+| `page` | integer | `0` | `page=0` | Zero-based page number |
+| `size` | integer | `20` | `size=10` | Number of items per page |
+| `sort` | string | `createdAt,desc` recommended | `sort=title,asc` | Field and direction |
 
-```bash
-curl http://localhost:8084/health
-```
-
-or:
-
-```bash
-curl http://localhost:8080/health
-```
-
-Expected:
-
-```text
-ok
-```
-
----
-
-## 8. Frontend API Flow
-
-The Angular frontend usually calls APIs through the Nginx gateway.
-
-Example:
-
-```text
-Frontend: http://localhost:4200
-API Gateway: http://localhost:8084/api/...
-```
-
-For JD generation, browser Network tab may show:
-
-```text
-POST http://localhost:8084/api/job-postings/generate-jd
-```
-
-Nginx forwards `/api/` requests to:
-
-```text
-job-posting-service:8082
-```
-
----
-
-## 9. Backend API Flow for JD Generation
-
-JD generation flow:
-
-```text
-Angular Frontend
-    ↓
-Nginx Gateway
-    ↓
-Job Posting Service
-    ↓
-External AI Service
-```
-
-The backend controller endpoint is:
+Recommended controller signature:
 
 ```java
-@PostMapping("/generate-jd")
-public ResponseEntity<JdSectionsResponse> generateJd(@RequestBody GenerateJdRequest req)
+@GetMapping
+public Page<JobPostingResponse> getJobPostings(
+        JobPostingSearchCriteria criteria,
+        @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC) Pageable pageable) {
+    return jobPostingService.search(criteria, pageable);
+}
 ```
 
-The job-posting-service calls the external AI service using:
+Alternative explicit parameters:
 
 ```java
-String url = aiServiceBaseUrl + "/api/v1/ai/jd/generate";
-return restTemplate.postForObject(url, request, JdGenerationResponse.class);
+@GetMapping
+public PageResponse<JobPostingResponse> getJobPostings(
+        @RequestParam(defaultValue = "0") int page,
+        @RequestParam(defaultValue = "20") int size,
+        @RequestParam(required = false) String sort,
+        @RequestParam(required = false) String status) {
+    ...
+}
 ```
 
-So the final AI URL becomes:
+## Pagination Response Structure
 
-```text
-${AI_SERVICE_BASE_URL}/api/v1/ai/jd/generate
-```
-
-Example:
-
-```text
-http://host.docker.internal:9999/api/v1/ai/jd/generate
-```
-
----
-
-## 10. JD Generation Troubleshooting
-
-### Case 1: Browser shows mock/template JD
-
-Check the browser Network tab.
-
-Open Chrome DevTools:
-
-```text
-Right click page → Inspect → Network
-```
-
-Click:
-
-```text
-Generate JD with AI
-```
-
-Open the request:
-
-```text
-generate-jd
-```
-
-Check:
-
-```text
-Request URL
-Status Code
-Response
-```
-
-If the response itself contains template text, Angular is not creating the mock data. It is showing exactly what the backend returned.
-
-### Case 2: AI service is not running
-
-Test from Mac:
-
-```bash
-curl -i http://localhost:9999
-```
-
-Test from Docker container:
-
-```bash
-docker-compose exec job-posting-service sh -c "curl -i http://host.docker.internal:9999"
-```
-
-If you see:
-
-```text
-Connection refused
-```
-
-then no AI service is running on port `9999`.
-
-### Case 3: Backend logs show connection refused
-
-Check logs:
-
-```bash
-docker-compose logs job-posting-service --tail=150
-```
-
-If logs show:
-
-```text
-Caused by: java.net.ConnectException: Connection refused
-```
-
-then job-posting-service is correctly trying to call the AI service, but the AI service is not available.
-
-Fix by starting the AI service or updating `.env`:
-
-```env
-AI_SERVICE_BASE_URL=http://actual-ai-service-host:actual-port
-```
-
-Then recreate:
-
-```bash
-docker-compose up -d --force-recreate job-posting-service
-```
-
----
-
-## 11. Manual API Tests
-
-### Health checks
-
-```bash
-curl http://localhost:8082/actuator/health
-curl http://localhost:8085/actuator/health
-```
-
-### JD generation direct test
-
-This endpoint may require authentication.
-
-Without auth, this may return:
+Recommended response if using Spring `Page` directly:
 
 ```json
-{"error":"Unauthorized"}
+{
+  "content": [
+    {
+      "id": 1,
+      "title": "Senior Java Developer",
+      "postingStatus": "LIVE"
+    }
+  ],
+  "pageable": {
+    "pageNumber": 0,
+    "pageSize": 10
+  },
+  "totalElements": 42,
+  "totalPages": 5,
+  "number": 0,
+  "size": 10,
+  "first": true,
+  "last": false,
+  "numberOfElements": 10,
+  "empty": false
+}
 ```
 
-Request:
+Recommended cleaner custom response:
 
-```bash
-curl -i -X POST http://localhost:8082/job-postings/generate-jd \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
-  -d '{
-    "roleTitle": "Java Developer",
-    "department": "Engineering",
-    "location": "Bangalore",
-    "workMode": "Hybrid",
-    "experienceYears": "3",
-    "skillsRequired": ["Java", "Spring Boot", "PostgreSQL"],
-    "seniorityLevel": "MID",
-    "employmentType": "Full-time",
-    "additionalContext": "Backend API development"
-  }'
+```json
+{
+  "items": [
+    {
+      "id": 1,
+      "title": "Senior Java Developer",
+      "postingStatus": "LIVE"
+    }
+  ],
+  "page": 0,
+  "size": 10,
+  "totalItems": 42,
+  "totalPages": 5,
+  "hasNext": true,
+  "hasPrevious": false,
+  "sort": ["createdAt,desc"]
+}
 ```
 
-Through gateway:
+Either approach can satisfy Module 7 if metadata is present.
 
-```bash
-curl -i -X POST http://localhost:8084/api/job-postings/generate-jd \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
-  -d '{
-    "roleTitle": "Java Developer",
-    "department": "Engineering",
-    "location": "Bangalore",
-    "workMode": "Hybrid",
-    "experienceYears": "3",
-    "skillsRequired": ["Java", "Spring Boot", "PostgreSQL"],
-    "seniorityLevel": "MID",
-    "employmentType": "Full-time",
-    "additionalContext": "Backend API development"
-  }'
+## Filtering Requirements and Recommended Fields
+
+The job posting entity has enough fields to meet the requirement of at least 3 searchable parameters.
+
+Recommended searchable parameters:
+
+| Field | Query Parameter | Operator | Multiple Values | Example | Purpose |
+|---|---|---|---|---|---|
+| `postingStatus` | `status` | exact `==` | Yes | `status=LIVE&status=READY_TO_PUBLISH` | Filter by lifecycle state |
+| `workMode` | `workMode` | exact `==` | Yes | `workMode=REMOTE` | Filter remote/hybrid/onsite |
+| `level` | `level` | exact `==` | Yes | `level=SENIOR` | Filter seniority |
+| `department` | `department` | exact or partial | No | `department=Engineering` | Filter business unit |
+| `locationCity` | `city` | exact or partial | No | `city=New York` | Filter location |
+| `skills` | `skill` | contains | Yes | `skill=Java&skill=Kafka` | Filter by required skills |
+| `salaryMin` | `salaryMinGte` | `>=` | No | `salaryMinGte=100000` | Numeric lower-bound search |
+| `salaryMax` | `salaryMaxLte` | `<=` | No | `salaryMaxLte=180000` | Numeric upper-bound search |
+| `applicationDeadline` | `deadlineBefore` | `<` | No | `deadlineBefore=2026-09-01` | Date less-than search |
+| `applicationDeadline` | `deadlineAfter` | `>` | No | `deadlineAfter=2026-06-01` | Date greater-than search |
+| `createdAt` | `createdAfter` | `>` | No | `createdAfter=2026-06-01T00:00:00` | Recent postings |
+
+Minimum Module 7 set:
+
+1. `status` exact match, multiple values.
+2. `workMode` exact match.
+3. `level` exact match.
+4. `salaryMinGte` numeric greater-than.
+5. `deadlineBefore` date less-than.
+
+## Sorting Requirements
+
+Module 7 requires ordering for at least 2 parameters.
+
+Recommended sortable fields:
+
+| Sort Field | Example | Description |
+|---|---|---|
+| `createdAt` | `sort=createdAt,desc` | Newest postings first |
+| `title` | `sort=title,asc` | Alphabetical title |
+| `applicationDeadline` | `sort=applicationDeadline,asc` | Soonest deadlines first |
+| `salaryMin` | `sort=salaryMin,desc` | Highest salary minimum first |
+| `updatedAt` | `sort=updatedAt,desc` | Recently changed postings first |
+
+Example requests:
+
+```http
+GET /api/job-postings?page=0&size=10&sort=createdAt,desc
 ```
 
----
+```http
+GET /api/job-postings?page=0&size=10&sort=title,asc
+```
 
-## 12. Getting the Auth Token from Browser
+```http
+GET /api/job-postings?page=0&size=10&sort=applicationDeadline,asc
+```
 
-If curl returns unauthorized, use the frontend login flow.
+## Search Implementation Options
 
-Then open Chrome DevTools:
+Module 7 lists multiple possible implementation styles:
+
+- Criteria API.
+- JPA Specification API.
+- QueryDSL.
+- Advanced Search Operations.
+- jOOQ dynamic query generation.
+- Specification argument resolver.
+
+Recommended for Forge:
 
 ```text
-Inspect → Network
+Spring Data JPA Specification API
 ```
-
-Click any authenticated API request.
-
-Look for request header:
-
-```text
-Authorization: Bearer <token>
-```
-
-Copy the token and use it in curl:
-
-```bash
--H "Authorization: Bearer YOUR_TOKEN_HERE"
-```
-
----
-
-## 13. Useful Docker Commands
-
-### See running services
-
-```bash
-docker-compose ps
-```
-
-### See logs for all services
-
-```bash
-docker-compose logs --tail=100
-```
-
-### See logs for job service
-
-```bash
-docker-compose logs job-posting-service --tail=150
-```
-
-### Follow logs live
-
-```bash
-docker-compose logs -f job-posting-service
-```
-
-### Restart one service
-
-```bash
-docker-compose restart job-posting-service
-```
-
-### Recreate one service
-
-```bash
-docker-compose up -d --force-recreate job-posting-service
-```
-
-### Stop all services
-
-```bash
-docker-compose down
-```
-
-### Stop and remove volumes
-
-Warning: this deletes database data.
-
-```bash
-docker-compose down -v
-```
-
-### Rebuild everything from scratch
-
-```bash
-docker-compose down
-docker-compose build --no-cache
-docker-compose up -d
-```
-
----
-
-## 14. Database
-
-PostgreSQL runs in Docker.
-
-Typical environment:
-
-```env
-DB_USERNAME=forge
-DB_PASSWORD=forge_secure_123
-```
-
-The job-posting-service connects internally to:
-
-```text
-jdbc:postgresql://postgres:5432/job_posting_db
-```
-
-Because the service runs inside Docker, it uses the Docker service name:
-
-```text
-postgres
-```
-
-not:
-
-```text
-localhost
-```
-
-### Connect to PostgreSQL container
-
-```bash
-docker-compose exec postgres psql -U forge
-```
-
-List databases:
-
-```sql
-\l
-```
-
-Connect to job posting DB:
-
-```sql
-\c job_posting_db
-```
-
-List tables:
-
-```sql
-\dt
-```
-
----
-
-## 15. Kafka
-
-Kafka is used for service communication/events.
-
-Internal Kafka bootstrap server:
-
-```text
-kafka:29092
-```
-
-Check Kafka logs:
-
-```bash
-docker-compose logs kafka --tail=100
-```
-
-Check job-posting-service Kafka logs:
-
-```bash
-docker-compose logs job-posting-service --tail=150
-```
-
-Kafka UI may be available depending on configured port.
-
-Check:
-
-```bash
-docker-compose ps
-```
-
-Look for the exposed Kafka UI port.
-
----
-
-## 16. Frontend Development Mode
-
-If you want to run frontend locally outside Docker:
-
-```bash
-cd "Forge_frontend"
-npm install
-```
-
-Then run the app, depending on package scripts:
-
-```bash
-npm start
-```
-
-or:
-
-```bash
-npx nx serve demands
-```
-
-or:
-
-```bash
-ng serve
-```
-
-Open:
-
-```text
-http://localhost:4200
-```
-
-Make sure the frontend environment points to the correct API base URL, usually the Nginx gateway:
-
-```text
-http://localhost:8084/api
-```
-
----
-
-## 17. Backend Local Development
-
-Run job-posting-service locally:
-
-```bash
-cd "Forge_backend/backend/job-posting-service"
-mvn spring-boot:run
-```
-
-If running locally outside Docker, database and Kafka settings must point to accessible services.
-
-When backend runs locally, `localhost` refers to your Mac.
-
-When backend runs inside Docker, `localhost` refers to the container.
-
-This distinction is very important.
-
----
-
-## 18. Common Problems and Fixes
-
-### Problem: `401 Unauthorized` from backend
 
 Reason:
 
-```text
-Request is missing JWT token.
+- The project already uses Spring Data JPA repositories.
+- Job posting filters are dynamic and optional.
+- Specifications are easy to extend with new fields/operators.
+- It maps well to Module 7 requirement for flexible and extensible filtering.
+
+## Recommended Implementation Design
+
+## `JobPostingSearchCriteria`
+
+```java
+public record JobPostingSearchCriteria(
+        List<JobStatus> status,
+        List<String> workMode,
+        List<String> level,
+        String department,
+        String city,
+        List<String> skills,
+        BigDecimal salaryMinGte,
+        BigDecimal salaryMaxLte,
+        LocalDate deadlineBefore,
+        LocalDate deadlineAfter,
+        LocalDateTime createdAfter,
+        LocalDateTime createdBefore
+) {}
 ```
 
-Fix:
+## Repository
 
-Login from frontend or include:
+Change repository to support specifications:
 
-```text
-Authorization: Bearer YOUR_TOKEN
+```java
+public interface JobPostingRepository extends JpaRepository<JobPosting, Long>, JpaSpecificationExecutor<JobPosting> {
+    ...
+}
 ```
 
-### Problem: `Connection refused host.docker.internal:9999`
+## Specification Builder
 
-Reason:
-
-```text
-AI service is not running on Mac port 9999.
+```java
+public class JobPostingSpecifications {
+    public static Specification<JobPosting> hasStatuses(List<JobStatus> statuses) { ... }
+    public static Specification<JobPosting> hasWorkModes(List<String> workModes) { ... }
+    public static Specification<JobPosting> hasLevels(List<String> levels) { ... }
+    public static Specification<JobPosting> salaryMinGreaterThanOrEqual(BigDecimal value) { ... }
+    public static Specification<JobPosting> deadlineBefore(LocalDate value) { ... }
+}
 ```
 
-Fix:
-
-Start AI service locally or update:
-
-```env
-AI_SERVICE_BASE_URL=http://actual-ai-host:actual-port
-```
-
-Then recreate job service:
-
-```bash
-docker-compose up -d --force-recreate job-posting-service
-```
-
-### Problem: Docker build fails with JFrog 401
-
-Reason:
-
-```text
-Docker Maven build cannot access private JFrog dependency.
-```
-
-Fix:
-
-Copy Maven settings into Docker build context for local use:
-
-```bash
-cd "Forge_backend/backend/job-posting-service"
-cp ~/.m2/settings.xml ./settings.xml
-echo "settings.xml" >> .gitignore
-```
-
-Update Dockerfile to copy settings into `/root/.m2/settings.xml`.
-
-### Problem: Old mock/template JD still appears
-
-Reason:
+## Service Flow
 
 ```text
-Old Docker image may still be running.
+Controller receives query parameters + Pageable
+        |
+        v
+Parameters mapped to JobPostingSearchCriteria
+        |
+        v
+Service builds Specification<JobPosting>
+        |
+        v
+Repository executes findAll(specification, pageable)
+        |
+        v
+Page<JobPosting> mapped to Page<JobPostingResponse>
+        |
+        v
+Controller returns paginated response
 ```
 
-Fix:
+## Example Requests
 
-```bash
-docker-compose build --no-cache job-posting-service
-docker-compose up -d --force-recreate job-posting-service
+## First Page
+
+```http
+GET /api/job-postings?page=0&size=10
 ```
 
-Then check logs:
+## Second Page
 
-```bash
-docker-compose logs job-posting-service --tail=150
+```http
+GET /api/job-postings?page=1&size=10
 ```
 
-### Problem: Browser directly opening backend URL shows unauthorized
+## Sort by Created Date Descending
 
-This is normal for protected endpoints.
+```http
+GET /api/job-postings?page=0&size=10&sort=createdAt,desc
+```
 
-Example:
+## Sort by Title Ascending
+
+```http
+GET /api/job-postings?page=0&size=10&sort=title,asc
+```
+
+## Filter by Exact Status
+
+```http
+GET /api/job-postings?status=LIVE
+```
+
+## Filter by Multiple Statuses
+
+```http
+GET /api/job-postings?status=LIVE&status=READY_TO_PUBLISH
+```
+
+## Filter by Work Mode and Level
+
+```http
+GET /api/job-postings?workMode=REMOTE&level=SENIOR
+```
+
+## Numeric Greater-Than Filter
+
+```http
+GET /api/job-postings?salaryMinGte=100000
+```
+
+## Date Less-Than Filter
+
+```http
+GET /api/job-postings?deadlineBefore=2026-09-01
+```
+
+## Combined Search
+
+```http
+GET /api/job-postings?page=0&size=10&sort=createdAt,desc&status=LIVE&workMode=REMOTE&level=SENIOR&salaryMinGte=100000&deadlineBefore=2026-12-31
+```
+
+## Public Careers Search Recommendation
+
+Public careers currently uses:
+
+```http
+GET /api/job-postings/public/live
+```
+
+Recommended future public search:
+
+```http
+GET /api/job-postings/public/live?page=0&size=12&city=Bangalore&skill=Java&workMode=HYBRID
+```
+
+This would improve candidate browsing and aligns with the domain.
+
+## Validation for Search Parameters
+
+Recommended validations:
+
+| Parameter | Rule | Error |
+|---|---|---|
+| `page` | `>= 0` | `400` if negative |
+| `size` | `1..100` | `400` if too small/large |
+| `sort` | Allowed field only | `400` if unknown field |
+| `status` | Valid enum | `400` if unsupported status |
+| `salaryMinGte` | `>= 0` | `400` if negative |
+| `deadlineBefore` | valid ISO date | `400` if invalid date |
+
+Recommended RFC 7807 error:
+
+```json
+{
+  "type": "https://forge/errors/invalid-search-parameter",
+  "title": "Invalid search parameter",
+  "status": 400,
+  "detail": "Search parameter validation failed",
+  "errors": [
+    {
+      "field": "size",
+      "message": "must be between 1 and 100"
+    }
+  ]
+}
+```
+
+## Tests Required
+
+Module 7 requires unit and integration coverage.
+
+Recommended unit tests:
+
+| Test Class | Purpose |
+|---|---|
+| `JobPostingSpecificationsTest` | Verify each filter specification produces expected results |
+| `JobPostingSearchServiceTest` | Verify criteria and pageable are passed correctly |
+| `JobPostingSearchCriteriaValidationTest` | Verify invalid page/size/status/sort errors |
+
+Recommended MockMvc tests:
+
+| Scenario | Request | Expected |
+|---|---|---|
+| First page | `GET /api/job-postings?page=0&size=10` | `200`, metadata present |
+| Status filter | `GET /api/job-postings?status=LIVE` | All items LIVE |
+| Multiple status filter | `status=LIVE&status=READY_TO_PUBLISH` | Items match either status |
+| Numeric filter | `salaryMinGte=100000` | All salaries >= 100000 |
+| Date filter | `deadlineBefore=2026-09-01` | Deadlines before date |
+| Sort title | `sort=title,asc` | Alphabetical order |
+| Invalid size | `size=0` | `400` |
+| Invalid status | `status=BAD` | `400` |
+| Unknown sort field | `sort=password,asc` | `400` |
+| No results | Search impossible criteria | `200` with empty page |
+
+Current status from supplied docs:
 
 ```text
-http://localhost:8082/job-postings/generate-jd
+Search/pagination tests: TODO / not confirmed
 ```
 
-The endpoint is a POST endpoint and requires authentication. Opening it in browser sends a GET request without auth.
+## Postman Demo Plan
 
-Use frontend or curl with JWT token.
-
----
-
-## 19. Recommended Startup Sequence
-
-From root:
-
-```bash
-cd "/Users/sanjakumar/Downloads/Forge_FullStack 2"
-```
-
-Start all services:
-
-```bash
-docker-compose up -d
-```
-
-Check status:
-
-```bash
-docker-compose ps
-```
-
-Check health:
-
-```bash
-curl http://localhost:8082/actuator/health
-curl http://localhost:8085/actuator/health
-```
-
-Open frontend:
+Create folder:
 
 ```text
-http://localhost:4200
+06 Search Pagination Sorting
 ```
 
-Login.
+Requests:
 
-Use the application.
+1. `GET /api/job-postings?page=0&size=5`
+2. `GET /api/job-postings?page=1&size=5`
+3. `GET /api/job-postings?status=LIVE`
+4. `GET /api/job-postings?status=LIVE&status=READY_TO_PUBLISH`
+5. `GET /api/job-postings?workMode=REMOTE&level=SENIOR`
+6. `GET /api/job-postings?salaryMinGte=100000`
+7. `GET /api/job-postings?deadlineBefore=2026-09-01`
+8. `GET /api/job-postings?sort=createdAt,desc`
+9. `GET /api/job-postings?sort=title,asc`
+10. Invalid: `GET /api/job-postings?page=-1`
+11. Invalid: `GET /api/job-postings?size=0`
+12. Invalid: `GET /api/job-postings?sort=unknown,asc`
 
-For JD generation, make sure AI service is available:
+## TODO for Module 7 Completion
 
-```bash
-curl -i http://localhost:9999
-```
-
-or configure `.env` with the real AI service URL.
-
----
-
-## 20. Cleanup Before Commit
-
-Before committing code, check:
-
-```bash
-git status --short
-```
-
-Make sure these are not committed:
-
-```text
-settings.xml
-.env with secrets
-target/
-node_modules/
-```
-
-Recommended `.gitignore` entries:
-
-```gitignore
-settings.xml
-.env
-target/
-node_modules/
-.DS_Store
-```
-
----
-
-## 21. Current Known JD Generation Requirement
-
-JD generation requires an external AI service.
-
-Current expected backend setting:
-
-```env
-AI_SERVICE_BASE_URL=http://host.docker.internal:9999
-```
-
-But this only works if the AI service is running on your Mac at port `9999`.
-
-If no AI service is running, backend logs will show:
-
-```text
-java.net.ConnectException: Connection refused
-```
-
-In that case, the application is correctly wired, but the AI dependency is missing.
-
-To fix, either:
-
-1. Start the Team 4 AI service locally on port `9999`, or
-2. Update `.env` with the real Team 4 AI service URL, then recreate job-posting-service.
-
----
-
-## 22. Quick Command Summary
-
-```bash
-# Go to project root
-cd "/Users/sanjakumar/Downloads/Forge_FullStack 2"
-
-# Start all
-docker-compose up -d
-
-# Build all
-docker-compose build
-
-# Rebuild job service
-docker-compose build --no-cache job-posting-service
-docker-compose up -d --force-recreate job-posting-service
-
-# Check services
-docker-compose ps
-
-# Check job service env
-docker-compose exec job-posting-service printenv | grep AI_SERVICE_BASE_URL
-
-# Check health
-curl http://localhost:8082/actuator/health
-curl http://localhost:8085/actuator/health
-
-# Check AI service from Mac
-curl -i http://localhost:9999
-
-# Check AI service from container
-docker-compose exec job-posting-service sh -c "curl -i http://host.docker.internal:9999"
-
-# Logs
-docker-compose logs job-posting-service --tail=150
-
-# Stop
-docker-compose down
-```
-
----
-
-## 23. Final Notes
-
-The frontend, gateway, and job-posting-service wiring are correct when:
-
-```text
-Frontend sends POST /api/job-postings/generate-jd
-Nginx forwards /api/ to job-posting-service:8082
-job-posting-service reads AI_SERVICE_BASE_URL
-job-posting-service calls /api/v1/ai/jd/generate on the AI service
-```
-
-If JD generation fails with connection refused, the issue is not Angular and not Nginx. It means the external AI service is not reachable.
-
-If JD generation returns template-like text, inspect the Network response first. The frontend displays whatever JSON the backend returns.
+- Implement `page` and `size` request parameters.
+- Return pagination metadata.
+- Add at least 3 searchable parameters.
+- Add at least 2 sortable fields.
+- Add exact-value filtering with multiple values.
+- Add numeric/date greater-than or less-than filtering.
+- Implement dynamic query using JPA Specification or approved alternative.
+- Add unit and MockMvc integration tests.
+- Add Postman search demo requests.
